@@ -14,7 +14,6 @@ use TYPO3\CMS\Core\Resource\ResourceFactory;
 use TYPO3\CMS\Core\Utility\ExtensionManagementUtility;
 use TYPO3\CMS\Core\Utility\GeneralUtility;
 use TYPO3\CMS\Extbase\Configuration\ConfigurationManagerInterface;
-use TYPO3\CMS\Extbase\Utility\DebuggerUtility;
 use TYPO3\CMS\Extbase\Utility\LocalizationUtility;
 use TYPO3\CMS\Core\TypoScript\Parser\TypoScriptParser;
 use TYPO3\CMS\Core\TypoScript\TypoScriptService;
@@ -99,9 +98,6 @@ final class CreateActionBeforeRenderView
      */
     protected function generatePdf(Mail $mail)
     {
-        $configurationManager = GeneralUtility::makeInstance(ConfigurationManagerInterface::class);
-        $settings = $configurationManager->getConfiguration(ConfigurationManagerInterface::CONFIGURATION_TYPE_FULL_TYPOSCRIPT);
-
         $this->encoding = $this->settings['encoding'];
 
         /** @var Folder $folder */
