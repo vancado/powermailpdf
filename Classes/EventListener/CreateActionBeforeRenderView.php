@@ -13,6 +13,8 @@ use TYPO3\CMS\Core\Resource\Folder;
 use TYPO3\CMS\Core\Resource\ResourceFactory;
 use TYPO3\CMS\Core\Utility\ExtensionManagementUtility;
 use TYPO3\CMS\Core\Utility\GeneralUtility;
+use TYPO3\CMS\Extbase\Configuration\ConfigurationManagerInterface;
+use TYPO3\CMS\Extbase\Utility\DebuggerUtility;
 use TYPO3\CMS\Extbase\Utility\LocalizationUtility;
 use TYPO3\CMS\Core\TypoScript\Parser\TypoScriptParser;
 use TYPO3\CMS\Core\TypoScript\TypoScriptService;
@@ -27,16 +29,67 @@ use In2code\Powermail\Events\FormControllerCreateActionBeforeRenderViewEvent;
  */
 final class CreateActionBeforeRenderView
 {
-    /** @var ResourceFactory */
-    protected $resourceFactory;
-    private StandaloneView $standaloneView;
-
     protected ?bool $encoding = null;
+    
+    protected $settings = [];
 
-    public function __construct(ResourceFactory $resourceFactory, StandaloneView $standaloneView)
+    public function __construct(
+        protected ResourceFactory $resourceFactory, 
+        private StandaloneView $standaloneView,
+    ) {
+    }
+
+    /**
+     *
+     * @param FormControllerCreateActionBeforeRenderViewEvent $event
+     * @throws Exception
+     *
+     */
+    public function __invoke(FormControllerCreateActionBeforeRenderViewEvent $event): void
     {
-        $this->resourceFactory = $resourceFactory;
-        $this->standaloneView = $standaloneView;
+        $configurationManager = GeneralUtility::makeInstance(ConfigurationManagerInterface::class);
+        $settings = $configurationManager->getConfiguration(ConfigurationManagerInterface::CONFIGURATION_TYPE_FULL_TYPOSCRIPT);
+
+        $this->settings = $settings['plugin.']['tx_powermailpdf.']['settings.'];
+        $mail = $event->getMail();
+        $formController = $event->getFormController();
+
+        if ($this->settings['enablePowermailPdf']) {
+            if ($this->settings['sourceFile']) {
+                if (!file_exists(GeneralUtility::getFileAbsFileName($this->settings['sourceFile']))) {
+                    throw new \Exception("The file does not exist: " . $this->settings['sourceFile'] . " Please set correct path in plugin.tx_powermailpdf.settings.sourceFile", 1417520887);
+                }
+            }
+
+            if ($this->settings['fillPdf']) {
+                $powermailPdfFile = $this->generatePdf($mail);
+            } else {
+                $powermailPdfFile = null;
+            }
+
+            if ($this->settings['showDownloadLink']) {
+                $label = LocalizationUtility::translate("download", "powermailpdf");
+                //Adds a field for the download link at the thx site
+                /* @var $answer Answer */
+                $answer = GeneralUtility::makeInstance(Answer::class);
+                /* @var $field Field */
+                $field = GeneralUtility::makeInstance(Field::class);
+                $field->setTitle(LocalizationUtility::translate('downloadLink', 'powermailpdf'));
+                $field->setMarker('downloadLink');
+                $field->setType('downloadLink');
+                $answer->setField($field);
+                $answer->setValue($this->render($powermailPdfFile, $label));
+                $mail->addAnswer($answer);
+            }
+
+            if ($this->settings['email.']['attachFile']) {
+                // set pdf filename for attachment via TypoScript
+                $settings = $formController->getSettings();
+                $settings['receiver']['addAttachment']['value'] = $powermailPdfFile->getForLocalProcessing(false);
+                $settings['sender']['addAttachment']['value'] = $powermailPdfFile->getForLocalProcessing(false);
+                $formController->setSettings($settings);
+            }
+        }
     }
 
     /**
@@ -46,12 +99,13 @@ final class CreateActionBeforeRenderView
      */
     protected function generatePdf(Mail $mail)
     {
+        $configurationManager = GeneralUtility::makeInstance(ConfigurationManagerInterface::class);
+        $settings = $configurationManager->getConfiguration(ConfigurationManagerInterface::CONFIGURATION_TYPE_FULL_TYPOSCRIPT);
 
-        $settings = $GLOBALS['TSFE']->tmpl->setup['plugin.']['tx_powermailpdf.']['settings.'];
-        $this->encoding = $settings['encoding'];
+        $this->encoding = $this->settings['encoding'];
 
         /** @var Folder $folder */
-        $folder = $this->resourceFactory->getFolderObjectFromCombinedIdentifier($settings['target.']['pdf']);
+        $folder = $this->resourceFactory->getFolderObjectFromCombinedIdentifier($this->settings['target.']['pdf']);
 
         // Include \FPDM library from phar file, if not included already (e.g. composer installation)
         if (!class_exists('\FPDM')) {
@@ -59,7 +113,7 @@ final class CreateActionBeforeRenderView
         }
 
         //Normal Fields
-        $fieldMap = $settings['fieldMap.'];
+        $fieldMap = $this->settings['fieldMap.'];
 
         $answers = $mail->getAnswers();
 
@@ -101,8 +155,8 @@ final class CreateActionBeforeRenderView
         }
 
         // Variables
-        if (isset($settings['variables.'])) {
-            $variables = $settings['variables.'];
+        if (isset($this->settings['variables.'])) {
+            $variables = $this->settings['variables.'];
 
             if (!empty($variables)) {
                 $typoScriptService = GeneralUtility::makeInstance(TypoScriptService::class);
@@ -116,7 +170,7 @@ final class CreateActionBeforeRenderView
             }
         }
 
-        $pdfOriginal = GeneralUtility::getFileAbsFileName($GLOBALS['TSFE']->tmpl->setup['plugin.']['tx_powermailpdf.']['settings.']['sourceFile']);
+        $pdfOriginal = GeneralUtility::getFileAbsFileName($this->settings['sourceFile']);
 
         if (!empty($pdfOriginal)) {
             $pdfFlatTempFile = (string) null;
@@ -129,10 +183,10 @@ final class CreateActionBeforeRenderView
             $pdf->Merge();
             $pdf->Output("F", GeneralUtility::getFileAbsFileName($pdfTempFile));
 
-            if ($settings['flatten'] && $settings['flattenTool']) {
+            if ($this->settings['flatten'] && $this->settings['flattenTool']) {
                 $pdfFlatTempFile = GeneralUtility::tempnam($pdfFilename, '.pdf');
                 $tempFile = GeneralUtility::tempnam($pdfFilename, '.pdf');
-                switch ($settings['flattenTool']) {
+                switch ($this->settings['flattenTool']) {
                     case 'gs':
                         // Flatten PDF with ghostscript
                         @shell_exec("gs -sDEVICE=pdfwrite -dSubsetFonts=false -dPDFSETTINGS=/default -dNOPAUSE -dBATCH -sOutputFile=" . $pdfFlatTempFile . " " . $pdfTempFile);
@@ -166,8 +220,7 @@ final class CreateActionBeforeRenderView
      */
     protected function render(File $file, $label)
     {
-        $settings = $GLOBALS['TSFE']->tmpl->setup['plugin.']['tx_powermailpdf.']['settings.'];
-        $templatePath = GeneralUtility::getFileAbsFileName($settings['template']);
+        $templatePath = GeneralUtility::getFileAbsFileName($this->settings['template']);
         $this->standaloneView->setFormat('html');
         $this->standaloneView->setTemplatePathAndFilename($templatePath);
         $this->standaloneView->assignMultiple([
@@ -176,56 +229,6 @@ final class CreateActionBeforeRenderView
         ]);
 
         return $this->standaloneView->render();
-    }
-
-    /**
-     *
-     * @param FormControllerCreateActionBeforeRenderViewEvent $event
-     * @throws Exception
-     *
-     */
-    public function __invoke(FormControllerCreateActionBeforeRenderViewEvent $event): void
-    {
-        $settings = $GLOBALS['TSFE']->tmpl->setup['plugin.']['tx_powermailpdf.']['settings.'];
-        $mail = $event->getMail();
-        $formController = $event->getFormController();
-
-        if ($settings['enablePowermailPdf']) {
-            if ($settings['sourceFile']) {
-                if (!file_exists(GeneralUtility::getFileAbsFileName($settings['sourceFile']))) {
-                    throw new \Exception("The file does not exist: " . $settings['sourceFile'] . " Please set correct path in plugin.tx_powermailpdf.settings.sourceFile", 1417520887);
-                }
-            }
-
-            if ($settings['fillPdf']) {
-                $powermailPdfFile = $this->generatePdf($mail);
-            } else {
-                $powermailPdfFile = null;
-            }
-
-            if ($settings['showDownloadLink']) {
-                $label = LocalizationUtility::translate("download", "powermailpdf");
-                //Adds a field for the download link at the thx site
-                /* @var $answer Answer */
-                $answer = GeneralUtility::makeInstance(Answer::class);
-                /* @var $field Field */
-                $field = GeneralUtility::makeInstance(Field::class);
-                $field->setTitle(LocalizationUtility::translate('downloadLink', 'powermailpdf'));
-                $field->setMarker('downloadLink');
-                $field->setType('downloadLink');
-                $answer->setField($field);
-                $answer->setValue($this->render($powermailPdfFile, $label));
-                $mail->addAnswer($answer);
-            }
-
-            if ($settings['email.']['attachFile']) {
-                // set pdf filename for attachment via TypoScript
-                $settings = $formController->getSettings();
-                $settings['receiver']['addAttachment']['value'] = $powermailPdfFile->getForLocalProcessing(false);
-                $settings['sender']['addAttachment']['value'] = $powermailPdfFile->getForLocalProcessing(false);
-                $formController->setSettings($settings);
-            }
-        }
     }
 
     protected function encodeValue($value)
